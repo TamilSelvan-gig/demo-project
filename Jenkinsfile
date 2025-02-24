@@ -1,96 +1,133 @@
-pipeline {
-    agent any
-    
-    environment {
-        AWS_REGION = 'us-east-1'
-        AWS_ACCOUNT_ID = '123456789012' // Replace with your AWS account ID
-        APP_NAME = 'react-app'
-        GIT_REPO_URL = 'https://github.com/your-org/react-app.git' // Replace with your repo URL
+    pipeline {
+        agent any
         
-        // ECR repositories for different stages
-        DEV_ECR_REPO = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${APP_NAME}-dev"
-        STAGING_ECR_REPO = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${APP_NAME}-staging"
-        PROD_ECR_REPO = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${APP_NAME}-prod"
-        
-        // Deploy stage is determined by a parameter
-        DEPLOY_ENV = "${params.ENVIRONMENT ?: 'dev'}" // Default to dev if not specified
-    }
-    
-    parameters {
-        choice(name: 'ENVIRONMENT', choices: ['dev', 'staging', 'prod'], description: 'Select deployment environment')
-    }
+        environment {
+            AWS_REGION = 'us-west-2'
+            AWS_ACCOUNT_ID = '522814702164'
+            APP_NAME = 'react-app'
+            GIT_REPO_URL = 'https://github.com/TamilSelvan-gig/demo-project.git'
+            
+            // ECR repositories for different stages
+            ECR_BASE = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+            DEV_ECR_REPO = "${ECR_BASE}/${APP_NAME}-dev"
+            STAGING_ECR_REPO = "${ECR_BASE}/${APP_NAME}-staging"
+            PROD_ECR_REPO = "${ECR_BASE}/${APP_NAME}-prod"
 
-    stages {
-        stage('Setup ECR Repositories') {
-            steps {
-                script {
-                    // Create ECR repositories if they don't exist
-                    sh '''
-                        aws ecr describe-repositories --repository-names ${APP_NAME}-dev || \
-                        aws ecr create-repository --repository-name ${APP_NAME}-dev
-                        
-                        aws ecr describe-repositories --repository-names ${APP_NAME}-staging || \
-                        aws ecr create-repository --repository-name ${APP_NAME}-staging
-                        
-                        aws ecr describe-repositories --repository-names ${APP_NAME}-prod || \
-                        aws ecr create-repository --repository-name ${APP_NAME}-prod
-                        
-                        # ECR login
-                        aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
-                    '''
-                }
-            }
+            ECS_CLUSTER_NAME = 'react-app-dev-cluster'
+            ECS_SERVICE_NAME = 'react-app-dev-service'
+            ECS_TASK_DEFINITION_NAME = 'react-app-dev'
+            
+            // AWS credentials
+            AWS_CREDS = credentials('AWS-Creds')
+            // Git credentials
+            GIT_CREDS = credentials('GIT-Creds')
         }
         
-        stage('Clone and Setup') {
-            steps {
-                // Clean workspace and clone repository
-                cleanWs()
-                git branch: 'main', url: "${GIT_REPO_URL}"
-                
-                // Change into the cloned directory and install Node.js dependencies
-                sh '''
-                    cd ${WORKSPACE}
-                    npm install
-                    npm run build
-                '''
-            }
+        parameters {
+            choice(name: 'ENVIRONMENT', choices: ['dev', 'staging', 'prod'], description: 'Select deployment environment')
         }
-        
-        stage('Build and Push Docker Image') {
-            steps {
-                script {
-                    def imageTag = "${env.BUILD_NUMBER}-${env.GIT_COMMIT.take(7)}"
-                    def ecrRepo
-                    
-                    // Select ECR repository based on environment
-                    switch(DEPLOY_ENV) {
-                        case 'dev':
-                            ecrRepo = DEV_ECR_REPO
-                            break
-                        case 'staging':
-                            ecrRepo = STAGING_ECR_REPO
-                            break
-                        case 'prod':
-                            ecrRepo = PROD_ECR_REPO
-                            break
+
+        stages {
+            stage('Configure AWS') {
+                steps {
+                    script {
+                        // Verify AWS CLI configuration
+                        sh 'aws sts get-caller-identity'
                     }
-                    
-                    // Build Docker image
-                    sh """
-                        docker build -t ${ecrRepo}:${imageTag} -t ${ecrRepo}:latest .
-                        docker push ${ecrRepo}:${imageTag}
-                        docker push ${ecrRepo}:latest
-                    """
+                }
+            }
+
+            stage('Setup ECR and Docker') {
+                steps {
+                    script {
+                        // Verify Docker installation
+                        sh 'docker --version'
+                        
+                        // Create ECR repositories for all environments if they don't exist
+                        def environments = ['dev', 'staging', 'prod']
+                        environments.each { env ->
+                            def repoName = "${APP_NAME}-${env}"
+                            sh """
+                                if ! aws ecr describe-repositories --repository-names ${repoName} 2>/dev/null; then
+                                    echo "Creating ECR repository: ${repoName}"
+                                    aws ecr create-repository --repository-name ${repoName}
+                                fi
+                            """
+                        }
+                        
+                        // Login to ECR
+                        sh """
+                            aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_BASE}
+                        """
+                    }
+                }
+            }
+            
+            stage('Build and Test') {
+                steps {
+                    script {
+                        // Clean workspace and clone repository with credentials
+                        cleanWs()
+                        git credentialsId: 'GIT-Creds', 
+                            url: "${GIT_REPO_URL}",
+                            branch: 'main'
+                        
+                        // List repository contents for debugging
+                        sh '''
+                            echo "Current directory contents:"
+                            ls -la
+                            
+                            # Install Node.js if not present
+                            if ! command -v node &> /dev/null; then
+                                # Amazon Linux Node.js installation
+                                curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.3/install.sh | bash
+                                . ~/.nvm/nvm.sh
+                                nvm install 18
+                                nvm use 18
+                            fi
+                            
+                            # Verify versions
+                            node --version
+                            npm --version
+                            
+                            # If the repository is empty or missing React files, create a new React app
+                            if [ ! -f "package.json" ] || [ ! -d "public" ]; then
+                                echo "Creating new React application..."
+                                npx create-react-app .
+                            fi
+                            
+                            # Install dependencies and build
+                            if [ -f "package-lock.json" ]; then
+                                echo "Using package-lock.json"
+                                npm ci
+                            else
+                                echo "No package-lock.json found, using npm install"
+                                npm install
+                            fi
+                            
+                            npm run build
+                            npm test
+                        '''
+                    }
+                }
+            }
+            
+            stage('Build and Push Docker Image') {
+                steps {
+                    script {
+                        def envName = params.ENVIRONMENT ?: 'dev'
+                        def ecrRepo = "${ECR_BASE}/${APP_NAME}-${envName}"
+                        def imageTag = env.GIT_COMMIT ? env.GIT_COMMIT.take(8) : env.BUILD_NUMBER
+                        
+                        // Build and push Docker images with specific tag and latest
+                        sh """
+                            docker build -t ${ecrRepo}:${imageTag} .
+                            docker tag ${ecrRepo}:${imageTag} ${ecrRepo}:latest
+                            docker push ${ecrRepo}:${imageTag}
+                            docker push ${ecrRepo}:latest
+                        """
+                    }
                 }
             }
         }
     }
-    
-    post {
-        always {
-            // Clean up Docker images
-            sh 'docker system prune -f'
-        }
-    }
-} 
