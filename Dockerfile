@@ -24,13 +24,7 @@ COPY nginx.conf /etc/nginx/conf.d/default.conf
 RUN mkdir -p /var/run/nginx /var/cache/nginx && \
     chmod -R 777 /var/run/nginx /var/cache/nginx && \
     chown -R nginx:nginx /usr/share/nginx/html && \
-    chmod -R 755 /usr/share/nginx/html && \
-    touch /var/run/nginx.pid && \
-    chown -R nginx:nginx /var/run/nginx.pid && \
-    chmod 777 /var/run/nginx.pid
-
-# Switch to non-root user
-USER nginx
+    chmod -R 755 /usr/share/nginx/html
 
 EXPOSE 80
 
