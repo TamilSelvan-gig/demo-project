@@ -12,10 +12,6 @@
             DEV_ECR_REPO = "${ECR_BASE}/${APP_NAME}-dev"
             STAGING_ECR_REPO = "${ECR_BASE}/${APP_NAME}-staging"
             PROD_ECR_REPO = "${ECR_BASE}/${APP_NAME}-prod"
-
-            ECS_CLUSTER_NAME = 'react-app-dev-cluster'
-            ECS_SERVICE_NAME = 'react-app-dev-service'
-            ECS_TASK_DEFINITION_NAME = 'react-app-dev'
             
             // AWS credentials
             AWS_CREDS = credentials('AWS-Creds')
